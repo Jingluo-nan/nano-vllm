@@ -55,6 +55,8 @@ class BlockManager:
         self.used_block_ids.remove(block_id)
         self.free_block_ids.append(block_id)
 
+    # 查询是否有可复用的物理块，并预估"可复用几块、要新几块"
+    # 返回 -1（装不下）或可复用块数
     def can_allocate(self, seq: Sequence) -> int:
         h = -1
         num_cached_blocks = 0
@@ -64,18 +66,18 @@ class BlockManager:
             h = self.compute_hash(token_ids, h)
             block_id = self.hash_to_block_id.get(h, -1)
             if block_id == -1 or self.blocks[block_id].token_ids != token_ids:
-                break
+                break #不可再复用了
             num_cached_blocks += 1
             if block_id in self.used_block_ids:
                 num_new_blocks -= 1
         if len(self.free_block_ids) < num_new_blocks:
-            return -1
+            return -1 # 装不下
         return num_cached_blocks
 
     def allocate(self, seq: Sequence, num_cached_blocks: int):
         assert not seq.block_table
         h = -1
-        for i in range(num_cached_blocks):
+        for i in range(num_cached_blocks): # range不包含 num_cached_blocks
             token_ids = seq.block(i)
             h = self.compute_hash(token_ids, h)
             block_id = self.hash_to_block_id[h]
@@ -83,7 +85,7 @@ class BlockManager:
             if block_id in self.used_block_ids:
                 block.ref_count += 1
             else:
-                block.ref_count = 1
+                block.ref_count = 1  # 已释放但 hash 未失效 → 取回再用
                 self.free_block_ids.remove(block_id)
                 self.used_block_ids.add(block_id)
             seq.block_table.append(block_id)
@@ -92,6 +94,8 @@ class BlockManager:
         seq.num_cached_tokens = num_cached_blocks * self.block_size
 
     def deallocate(self, seq: Sequence):
+        #先释放后缀块，那么前缀块被其他人分走的概率就小。可以包含前缀块的缓存价值
+        #块被归还时，并不会清空其中的tokens，这样可以保留块的缓存价值
         for block_id in reversed(seq.block_table):
             block = self.blocks[block_id]
             block.ref_count -= 1
@@ -108,6 +112,7 @@ class BlockManager:
             seq.block_table.append(self._allocate_block())
 
     def hash_blocks(self, seq: Sequence):
+        # 整数除法的语义是”向下取整”,end 自然只数已写满的块,半满的尾块对应的余数被舍去,不进入循环范围
         start = seq.num_cached_tokens // self.block_size
         end = (seq.num_cached_tokens + seq.num_scheduled_tokens) // self.block_size
         if start == end: return

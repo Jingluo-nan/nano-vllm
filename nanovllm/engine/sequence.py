@@ -23,7 +23,7 @@ class Sequence:
         self.num_tokens = len(self.token_ids)
         self.num_prompt_tokens = len(token_ids)
         self.num_cached_tokens = 0
-        self.num_scheduled_tokens = 0
+        self.num_scheduled_tokens = 0 # 当前 step 计划计算的 token 数；非 step 期间 = 0
         self.is_prefill = True
         self.block_table = []
         self.temperature = sampling_params.temperature

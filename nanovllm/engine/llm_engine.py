@@ -67,6 +67,7 @@ class LLMEngine:
         if not isinstance(sampling_params, list):
             sampling_params = [sampling_params] * len(prompts)
         for prompt, sp in zip(prompts, sampling_params):
+            # 把请求加入队列
             self.add_request(prompt, sp)
         outputs = {}
         prefill_throughput = decode_throughput = 0.

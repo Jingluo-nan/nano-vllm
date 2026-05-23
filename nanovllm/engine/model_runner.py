@@ -91,12 +91,16 @@ class ModelRunner:
     def warmup_model(self):
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
+        # max_num_batched_tokens：单步 forward 一次能处理的 token 上限
+        # max_model_len 模型支持的单条seq的最大长度
         max_num_batched_tokens, max_model_len = self.config.max_num_batched_tokens, self.config.max_model_len
         seq_len = min(max_num_batched_tokens, max_model_len)
+        # max_num_seqs：单步 forward 能并发的最多 seq 条数
         num_seqs = min(max_num_batched_tokens // seq_len, self.config.max_num_seqs)
         seqs = [Sequence([0] * seq_len) for _ in range(num_seqs)]
         for seq in seqs:
             seq.num_scheduled_tokens = seq_len
+        # 用 prefill 而非 decode,是因为 prefill 一次性处理整段输入,激活张量比 decode 大得多
         self.run(seqs, True)
         torch.cuda.empty_cache()
 
@@ -107,9 +111,12 @@ class ModelRunner:
         used = total - free
         peak = torch.cuda.memory_stats()["allocated_bytes.all.peak"]
         current = torch.cuda.memory_stats()["allocated_bytes.all.current"]
-        num_kv_heads = hf_config.num_key_value_heads // self.world_size
+        num_kv_heads = hf_config.num_key_value_heads // self.world_size # 每张卡只负责自己的那几个头
         head_dim = getattr(hf_config, "head_dim", hf_config.hidden_size // hf_config.num_attention_heads)
         block_bytes = 2 * hf_config.num_hidden_layers * self.block_size * num_kv_heads * head_dim * hf_config.dtype.itemsize
+        # peak − current 正好就是”激活峰值临时占用的那部分”,这部分要预留给后续每次 forward。
+        # current ≈ 权重大小、peak ≈ 权重 + 激活峰值
+        # used 中已经包含权重大小
         config.num_kvcache_blocks = int(total * config.gpu_memory_utilization - used - peak + current) // block_bytes
         assert config.num_kvcache_blocks > 0
         self.kv_cache = torch.empty(2, hf_config.num_hidden_layers, config.num_kvcache_blocks, self.block_size, num_kv_heads, head_dim)
@@ -177,8 +184,8 @@ class ModelRunner:
         for seq in seqs:
             input_ids.append(seq.last_token)
             positions.append(len(seq) - 1)
-            context_lens.append(len(seq))
-            slot_mapping.append(seq.block_table[-1] * self.block_size + seq.last_block_num_tokens  - 1)
+            context_lens.append(len(seq)) # decode 路径下,每条 seq 当前 KV 已累积的 token 数
+            slot_mapping.append(seq.block_table[-1] * self.block_size + seq.last_block_num_tokens  - 1) # last_block_num_tokens 是序列在最后一个块中的token数
         input_ids = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         positions = torch.tensor(positions, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         slot_mapping = torch.tensor(slot_mapping, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
