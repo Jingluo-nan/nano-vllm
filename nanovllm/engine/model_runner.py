@@ -136,25 +136,30 @@ class ModelRunner:
     def prepare_prefill(self, seqs: list[Sequence]):
         input_ids = []
         positions = []
-        cu_seqlens_q = [0]
+        cu_seqlens_q = [0] # query在大屏数组里的边界
         cu_seqlens_k = [0]
         max_seqlen_q = 0
         max_seqlen_k = 0
-        slot_mapping = []
+        slot_mapping = [] # 每个新token写到哪个物理slot
         block_tables = None
         for seq in seqs:
-            start = seq.num_cached_tokens
-            seqlen_q = seq.num_scheduled_tokens
-            end = start + seqlen_q
+            start = seq.num_cached_tokens # 已缓存前缀长度
+            seqlen_q = seq.num_scheduled_tokens # 本步要算的新token数
+            end = start + seqlen_q # key 总长 = 前缀 + 新
             seqlen_k = end
-            input_ids.extend(seq[start:end])
-            positions.extend(range(start, end))
+            input_ids.extend(seq[start:end]) # 只取要算的那一段
+            positions.extend(range(start, end)) # 位置接着前缀往后排
             cu_seqlens_q.append(cu_seqlens_q[-1] + seqlen_q)
             cu_seqlens_k.append(cu_seqlens_k[-1] + seqlen_k)
             max_seqlen_q = max(seqlen_q, max_seqlen_q)
             max_seqlen_k = max(seqlen_k, max_seqlen_k)
             if not seq.block_table:    # warmup
                 continue
+        # —— slot_mapping：算出每个新 token 写到哪个物理 slot ——
+        # slot = KV cache 里的一个物理槽位，一个 token 的 K/V 占一个。
+        # 逻辑连续的 token，物理 block 可能不连续（paged），故逐 block 算。
+        # start_block / end_block：[start, end) 覆盖的逻辑 block 范围，
+        # end 向上取整，取成开区间（左闭右开）
             start_block = start // self.block_size
             end_block = (end + self.block_size - 1) // self.block_size
             for i in range(start_block, end_block):
@@ -166,8 +171,11 @@ class ModelRunner:
                 else:
                     slot_end = seq.block_table[i] * self.block_size + end - i * self.block_size
                 slot_mapping.extend(range(slot_start, slot_end))
-        if cu_seqlens_k[-1] > cu_seqlens_q[-1]:    # prefix cache
+        if cu_seqlens_k[-1] > cu_seqlens_q[-1]:    # prefix cache，需要准备block_tables,flash attention时使用
             block_tables = self.prepare_block_tables(seqs)
+        # non_blocking 把拷贝排进 CUDA stream 就返回，让 CPU 不干等,
+        # 拷贝与 forward 同在默认 stream，按入队顺序执行，
+        #   forward 一定等拷贝完才读，不会读到没拷完的数据。
         input_ids = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         positions = torch.tensor(positions, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         cu_seqlens_q = torch.tensor(cu_seqlens_q, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
@@ -189,6 +197,7 @@ class ModelRunner:
         input_ids = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         positions = torch.tensor(positions, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         slot_mapping = torch.tensor(slot_mapping, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
+        # 序列要回看的k/v长度
         context_lens = torch.tensor(context_lens, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
         block_tables = self.prepare_block_tables(seqs)
         set_context(False, slot_mapping=slot_mapping, context_lens=context_lens, block_tables=block_tables)
@@ -220,9 +229,11 @@ class ModelRunner:
 
     def run(self, seqs: list[Sequence], is_prefill: bool) -> list[int]:
         input_ids, positions = self.prepare_prefill(seqs) if is_prefill else self.prepare_decode(seqs)
+        # 在GPU上进行采样
         temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
         logits = self.run_model(input_ids, positions, is_prefill)
         token_ids = self.sampler(logits, temperatures).tolist() if self.rank == 0 else None
+        # 情况本步的context
         reset_context()
         return token_ids
 

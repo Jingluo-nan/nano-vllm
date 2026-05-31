@@ -31,6 +31,7 @@ def store_kvcache_kernel(
 
 
 def store_kvcache(key: torch.Tensor, value: torch.Tensor, k_cache: torch.Tensor, v_cache: torch.Tensor, slot_mapping: torch.Tensor):
+    # N ,本步token的总数
     N, num_heads, head_dim = key.shape
     D = num_heads * head_dim
     assert key.stride(-1) == 1 and value.stride(-1) == 1

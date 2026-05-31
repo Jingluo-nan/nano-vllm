@@ -63,8 +63,10 @@ class ColumnParallelLinear(LinearBase):
         super().__init__(input_size, divide(output_size, tp_size), bias, 0)
 
     def weight_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor):
+        # param 是在模型 init 时，分配的占位张量，是在GPU上的，形状是TP切分后的
+        # loaded_weight 时从 saftensors文件中读出的完整权重
         param_data = param.data
-        shard_size = param_data.size(self.tp_dim)
+        shard_size = param_data.size(self.tp_dim) # tp_dim = 0
         start_idx = self.tp_rank * shard_size
         loaded_weight = loaded_weight.narrow(self.tp_dim, start_idx, shard_size)
         param_data.copy_(loaded_weight)
@@ -84,8 +86,13 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
         self.output_sizes = output_sizes
         super().__init__(input_size, sum(output_sizes), bias)
 
+    # loaded_weight 是完整的 gate 或 up，不是两者合起来的
+    # 
     def weight_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor, loaded_shard_id: int):
+        # param 是切分过的，gate_up 两者合起来的
         param_data = param.data
+        # loaded_weight时完整的两份数据 gate_proj.weight 和 up_proj_weight,是没有切分的
+        # 算出本次要写入的分片，在本卡param.data里从第几行开始
         shard_offset = sum(self.output_sizes[:loaded_shard_id]) // self.tp_size
         shard_size = self.output_sizes[loaded_shard_id] // self.tp_size
         param_data = param_data.narrow(self.tp_dim, shard_offset, shard_size)
