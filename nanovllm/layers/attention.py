@@ -59,7 +59,9 @@ class Attention(nn.Module):
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
         context = get_context()
+        # 这里的 k、v 是当前这一步、这一层刚由 QKV 投影算出来的新 K/V（形状 [本步token数, kv头数, head_dim]）
         k_cache, v_cache = self.k_cache, self.v_cache
+        # 先存储刚算出的 k和 v,在进行 attention计算
         if k_cache.numel() and v_cache.numel():
             store_kvcache(k, v, k_cache, v_cache, context.slot_mapping)
         if context.is_prefill:
