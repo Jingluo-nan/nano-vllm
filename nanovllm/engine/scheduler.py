@@ -96,7 +96,7 @@ class Scheduler:
         self.waiting.appendleft(seq)
 
     def postprocess(self, seqs: list[Sequence], token_ids: list[int], is_prefill: bool):
-        for seq, token_id in zip(seqs, token_ids):
+        for seq, token_id in zip(seqs, token_ids): # 每条seq拿到一个 token
             self.block_manager.hash_blocks(seq)
             seq.num_cached_tokens += seq.num_scheduled_tokens
             seq.num_scheduled_tokens = 0
