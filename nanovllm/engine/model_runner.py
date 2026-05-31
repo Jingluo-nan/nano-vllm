@@ -1,5 +1,6 @@
 import pickle
 import torch
+import torch.cuda.nvtx as nvtx
 import torch.distributed as dist
 from multiprocessing.synchronize import Event
 from multiprocessing.shared_memory import SharedMemory
@@ -219,11 +220,13 @@ class ModelRunner:
             return self.model.compute_logits(graph_vars["outputs"][:bs])
 
     def run(self, seqs: list[Sequence], is_prefill: bool) -> list[int]:
+        nvtx.range_push(f"prefill bs={len(seqs)}" if is_prefill else f"decode bs={len(seqs)}")
         input_ids, positions = self.prepare_prefill(seqs) if is_prefill else self.prepare_decode(seqs)
         temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
         logits = self.run_model(input_ids, positions, is_prefill)
         token_ids = self.sampler(logits, temperatures).tolist() if self.rank == 0 else None
         reset_context()
+        nvtx.range_pop()
         return token_ids
 
     @torch.inference_mode()
