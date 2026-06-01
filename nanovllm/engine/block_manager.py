@@ -104,6 +104,36 @@ class BlockManager:
         seq.num_cached_tokens = 0
         seq.block_table.clear()
 
+    def evict(self, seq: Sequence, keep_indices: list[int]):
+        """回收序列尾部不再需要的整块（v0 压缩的块账部分，token 级通用、含零散）。
+
+        前置：须在 `ModelRunner.compact_kv` 完成物理 gather（把幸存 KV 紧凑到前部 slot）
+        之后调用。gather 后空出的一定是尾部整块，无 sub-block 碎片回收。
+
+        keep_indices 索引压缩前**物理** cache 的 KV 位置（[0, 物理KV数)，不含尚未写入
+        的 pending last_token）。
+
+        时序约定（⏸ 需在 GPU 环境核对）：压缩在 step 的 postprocess 之后、下个
+        prepare_decode 之前触发。此时 last_token 已 append 进 token_ids 但其 KV 尚未写入
+        cache → 物理 KV 数 = num_tokens-1-旧num_dropped_kv = seq.num_kv-1。压缩后下个
+        decode step 会把 pending token 写到第 len(keep_indices) 个 slot，使
+        num_kv(=context_lens) = len(keep_indices)+1，故
+        num_dropped_kv = num_tokens - len(keep_indices) - 1。
+        """
+        # TODO(step7): 注销被 gather 改写的前部块的前缀缓存 hash + 仅压 ref_count==1 的块。
+        num_keep = len(keep_indices)
+        new_num_blocks = (num_keep + self.block_size - 1) // self.block_size
+        assert 0 < new_num_blocks <= len(seq.block_table)
+        # 释放尾部整块（这些块在 gather 后只剩被丢弃的 KV）
+        for block_id in seq.block_table[new_num_blocks:]:
+            block = self.blocks[block_id]
+            block.ref_count -= 1
+            if block.ref_count == 0:
+                self._deallocate_block(block_id)
+        del seq.block_table[new_num_blocks:]
+        # num_kv 解耦：见上方时序约定的 -1（pending last_token 尚未入 cache）
+        seq.num_dropped_kv = seq.num_tokens - num_keep - 1
+
     def can_append(self, seq: Sequence) -> bool:
         return len(self.free_block_ids) >= (len(seq) % self.block_size == 1)
 

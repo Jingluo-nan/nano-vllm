@@ -16,20 +16,20 @@
 
 ## 3. num_kv 解耦（F2 / 设计 D4，压缩前提）
 
-- [ ] 3.1 `sequence.py` 新增 `num_kv` 字段：普通 decode 每步 `+1`，初始化与 prefill 后等于已缓存 token 数。**验证**：未开压缩时 `num_kv == 已缓存 token 数` 恒成立。
-- [ ] 3.2 `sequence.py` 增加基于 `num_kv` 的尾块填充量（替代 `last_block_num_tokens` 在 decode 路径的用途）。**验证**：单测覆盖跨块边界。
-- [ ] 3.3 `sequence.py` 的 `__getstate__/__setstate__` 同步 `num_kv`。**验证**：pickle round-trip 后 `num_kv` 不丢。
+- [x] 3.1 `sequence.py` 新增 `num_dropped_kv` 字段 + `num_kv` 属性(=num_tokens-num_dropped_kv，decode 自动+1，关闭时恒等 num_tokens)。⏸ 单测挂起。
+- [x] 3.2 `sequence.py` 增加 `num_kv_blocks`/`last_kv_block_num_tokens` 属性(基于 num_kv)。⏸ 跨块边界单测挂起。
+- [x] 3.3 `sequence.py` 的 `__getstate__/__setstate__` 同步 `num_dropped_kv`。⏸ round-trip 单测挂起。
 
 ## 4. StreamingLLM 保留集（设计 D7）
 
-- [ ] 4.1 实现 `streaming_keep_indices(num_kv, sink_blocks, recent_blocks, block_size) -> list[int]`，块对齐返回开头 sink + 最近 recent 的下标（有序、去重）。**验证**：单测覆盖 sink+recent ≥ 总块数（不压）、刚好超一块等边界。
-- [ ] 4.2 触发逻辑：物理占用块数 > `sink_blocks + recent_blocks` 时对该序列触发一次压缩。**验证**：短序列不触发、长序列触发。
+- [x] 4.1 `kv_compression.py` 实现 `streaming_keep_indices(...)`，块对齐返回 sink+recent 下标（[0,num_kv) 有序去重，覆盖全部块时返回全部）。⏸ 边界单测挂起。
+- [x] 4.2 `kv_compression.py` 实现 `should_compress(num_kv_blocks, sink_blocks, recent_blocks)` 触发谓词。实际接入 decode 循环在第 8 步。⏸ 触发单测挂起。
 
 ## 5. 物理 gather 与 block 回收（设计 D1/D2/D3，最难、给 v1 复用）
 
-- [ ] 5.1 `block_manager.py` 增加 `evict(seq, keep_indices)`：算紧凑后块数、`_deallocate_block` 还尾块、重写 `seq.block_table`、设 `seq.num_kv = len(keep_indices)`。**首版只处理整块释放**。**验证**：`len(free_block_ids)` 增量 = 回收块数。
-- [ ] 5.2 `model_runner.py` 增加跨层 gather：由旧 `block_table` + `keep_indices` 算 `(旧 slot → 新 slot)` 置换，对 `self.kv_cache[:, :, ...]` **所有层用同一置换**搬运（copy，不重旋转），严格 256 对齐。先 PyTorch 索引版。**验证**：搬运后读回保留 KV 与搬运前逐位一致。
-- [ ] 5.3 CPU 参考对拍：给定 q/k/v 与 keep_indices，手算"只在保留 KV 上的注意力"与 gather 后走 flash-attn 的结果比对。**验证**：`torch.allclose` 通过。
+- [x] 5.1 `block_manager.evict(seq, keep_indices)`：紧凑块数 `ceil(len/bs)`（通用含零散）、还尾部整块、`del block_table[new:]`、设 `num_dropped_kv=num_tokens-num_keep-1`（pending token 时序约定）。⏸ free_block_ids 增量验证挂起。TODO(step7) hash 注销留待。
+- [x] 5.2 `model_runner.compact_kv(block_table, keep_indices)`：token 级通用置换，kv_cache 展平按 slot `index_select().clone()→index_copy_`，所有层一并搬、copy 不重旋转。须在 evict 前调用。⏸ 逐位一致验证挂起。
+- [ ] 5.3 CPU 参考对拍，**用两组 keep_indices**：①块对齐（streaming 风格）②零散（手构造散落下标，提前压通用搬迁路径，不等 v1）。给定 q/k/v 与 keep_indices，手算"只在保留 KV 上的注意力"与 gather 后走 flash-attn 比对。**验证**⏸：两组 `torch.allclose` 均通过。
 
 ## 6. prepare_decode 改用 num_kv（设计 D4/D6）
 

@@ -128,6 +128,31 @@ class ModelRunner:
                 module.v_cache = self.kv_cache[1, layer_id]
                 layer_id += 1
 
+    @torch.inference_mode()
+    def compact_kv(self, block_table: list[int], keep_indices: list[int]):
+        """物理 gather：把 keep_indices 指定的幸存 KV 紧凑搬到前部连续 slot（v0 压缩核心）。
+
+        token 级通用置换 —— 对**任意** keep_indices（含 v1 的零散下标）成立；v0 喂的是
+        块对齐下标。所有层共用同一份 block_table 与同一份 slot 置换（copy，不重旋转，
+        故 RoPE 自动正确）。须在 `BlockManager.evict` 回收尾块**之前**调用（要读旧 block_table）。
+
+        slot = 物理块号 * block_size + 块内偏移。
+        新位置 j 处放原位置 keep_indices[j] 的 KV；因紧凑后块对齐到前部，
+        new_slot 由前部块号推出。new_slot <= old_slot 恒成立（向前搬）。
+        """
+        bs = self.block_size
+        old_slots = [block_table[p // bs] * bs + p % bs for p in keep_indices]
+        new_slots = [block_table[j // bs] * bs + j % bs for j in range(len(keep_indices))]
+        old_idx = torch.tensor(old_slots, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
+        new_idx = torch.tensor(new_slots, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
+        # kv_cache: [2, num_layers, num_blocks, block_size, num_kv_heads, head_dim]
+        # 展平 (num_blocks, block_size) → 单一 slot 维，便于按 slot 索引；所有层一并搬运
+        k2, num_layers, num_blocks, _, num_kv_heads, head_dim = self.kv_cache.shape
+        kv_flat = self.kv_cache.view(k2, num_layers, num_blocks * bs, num_kv_heads, head_dim)
+        # 先 index_select 收集到临时张量(clone)再 index_copy_，避免 old/new slot 重叠时的就地别名问题
+        src = kv_flat.index_select(2, old_idx).clone()
+        kv_flat.index_copy_(2, new_idx, src)
+
     def prepare_block_tables(self, seqs: list[Sequence]):
         max_len = max(len(seq.block_table) for seq in seqs)
         block_tables = [seq.block_table + [-1] * (max_len - len(seq.block_table)) for seq in seqs]

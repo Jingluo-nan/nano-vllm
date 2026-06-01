@@ -24,6 +24,9 @@ class Sequence:
         self.num_prompt_tokens = len(token_ids)
         self.num_cached_tokens = 0
         self.num_scheduled_tokens = 0 # 当前 step 计划计算的 token 数；非 step 期间 = 0
+        # KV 压缩(v0)：被压缩丢弃的 KV 累计数。num_kv = num_tokens - num_dropped_kv。
+        # 压缩关闭时恒为 0 → num_kv 恒等于 num_tokens，零回归。
+        self.num_dropped_kv = 0
         self.is_prefill = True
         self.block_table = []
         self.temperature = sampling_params.temperature
@@ -60,6 +63,20 @@ class Sequence:
     def last_block_num_tokens(self):
         return self.num_tokens - (self.num_blocks - 1) * self.block_size
 
+    # —— KV 压缩(v0)：以下三个基于 num_kv（cache 内实际保留的 KV 数）——
+    # 压缩关闭时 num_dropped_kv==0，三者分别等于 num_tokens / num_blocks / last_block_num_tokens。
+    @property
+    def num_kv(self):
+        return self.num_tokens - self.num_dropped_kv
+
+    @property
+    def num_kv_blocks(self):
+        return (self.num_kv + self.block_size - 1) // self.block_size
+
+    @property
+    def last_kv_block_num_tokens(self):
+        return self.num_kv - (self.num_kv_blocks - 1) * self.block_size
+
     def block(self, i):
         assert 0 <= i < self.num_blocks
         return self.token_ids[i*self.block_size: (i+1)*self.block_size]
@@ -71,10 +88,10 @@ class Sequence:
 
     def __getstate__(self):
         last_state = self.last_token if not self.is_prefill else self.token_ids
-        return (self.num_tokens, self.num_prompt_tokens, self.num_cached_tokens, self.num_scheduled_tokens, self.block_table, last_state)
+        return (self.num_tokens, self.num_prompt_tokens, self.num_cached_tokens, self.num_scheduled_tokens, self.num_dropped_kv, self.block_table, last_state)
 
     def __setstate__(self, state):
-        self.num_tokens, self.num_prompt_tokens, self.num_cached_tokens, self.num_scheduled_tokens, self.block_table, last_state = state
+        self.num_tokens, self.num_prompt_tokens, self.num_cached_tokens, self.num_scheduled_tokens, self.num_dropped_kv, self.block_table, last_state = state
         if isinstance(last_state, list):
             self.token_ids = last_state
             self.last_token = self.token_ids[-1]
