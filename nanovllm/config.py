@@ -16,10 +16,17 @@ class Config:
     eos: int = -1
     kvcache_block_size: int = 256
     num_kvcache_blocks: int = -1
+    # —— KV-Cache 压缩（v0: StreamingLLM）——
+    # 默认关闭；关闭时引擎行为与未引入本功能前完全一致
+    enable_kv_compression: bool = False
+    kv_sink_blocks: int = 1       # 保留开头几块当 sink（块对齐）
+    kv_recent_blocks: int = 3     # 保留最近几块
 
     def __post_init__(self):
         assert os.path.isdir(self.model)
         assert self.kvcache_block_size % 256 == 0
         assert 1 <= self.tensor_parallel_size <= 8
+        if self.enable_kv_compression:
+            assert self.kv_sink_blocks > 0 and self.kv_recent_blocks > 0
         self.hf_config = AutoConfig.from_pretrained(self.model)
         self.max_model_len = min(self.max_model_len, self.hf_config.max_position_embeddings)

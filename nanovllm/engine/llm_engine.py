@@ -71,13 +71,24 @@ class LLMEngine:
             self.add_request(prompt, sp)
         outputs = {}
         prefill_throughput = decode_throughput = 0.
+        # —— 基线度量：累计 decode 阶段的步数/batch/token/耗时，跑完算平均 ——
+        self.scheduler.num_preemptions = 0
+        decode_steps = 0
+        decode_batch_sum = 0      # 各 decode step 的 batch size 之和 → 平均 decode batch
+        decode_tokens = 0         # decode 阶段生成的 token 总数（每序列每步 1 个）
+        decode_time = 0.          # decode 阶段累计耗时
         while not self.is_finished():
             t = perf_counter()
             output, num_tokens = self.step()
+            dt = perf_counter() - t
             if num_tokens > 0:
-                prefill_throughput = num_tokens / (perf_counter() - t)
+                prefill_throughput = num_tokens / dt
             else:
-                decode_throughput = -num_tokens / (perf_counter() - t)
+                decode_throughput = -num_tokens / dt
+                decode_steps += 1
+                decode_batch_sum += -num_tokens
+                decode_tokens += -num_tokens
+                decode_time += dt
             pbar.set_postfix({
                 "Prefill": f"{int(prefill_throughput)}tok/s",
                 "Decode": f"{int(decode_throughput)}tok/s",
@@ -86,6 +97,18 @@ class LLMEngine:
                 outputs[seq_id] = token_ids
                 pbar.update(1)
         pbar.close()
+        # 汇总三项基线指标，存到 self.metrics 供外部读取，并在 verbose 时打印
+        self.metrics = {
+            "preemptions": self.scheduler.num_preemptions,
+            "avg_decode_batch": decode_batch_sum / decode_steps if decode_steps else 0.,
+            "decode_tok_s": decode_tokens / decode_time if decode_time else 0.,
+        }
+        if use_tqdm:
+            print(
+                f"[metrics] preemptions={self.metrics['preemptions']} "
+                f"avg_decode_batch={self.metrics['avg_decode_batch']:.1f} "
+                f"decode_tok_s={self.metrics['decode_tok_s']:.1f}"
+            )
         outputs = [outputs[seq_id] for seq_id in sorted(outputs.keys())]
         outputs = [{"text": self.tokenizer.decode(token_ids), "token_ids": token_ids} for token_ids in outputs]
         return outputs
