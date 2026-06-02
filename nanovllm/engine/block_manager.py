@@ -119,11 +119,38 @@ class BlockManager:
         decode step 会把 pending token 写到第 len(keep_indices) 个 slot，使
         num_kv(=context_lens) = len(keep_indices)+1，故
         num_dropped_kv = num_tokens - len(keep_indices) - 1。
+
+        前缀缓存隔离（step7 / 设计 D5）：gather 把幸存 KV 前移，被改写内容的前部块的
+        token_ids/hash 随之失效——若仍留在 hash_to_block_id，其他序列前缀命中会读到脏数据。
+        故对被改写块统一注销 hash、置 hash=-1；并断言这些块 ref_count==1（独占），
+        被共享则该序列不应压缩（调用方 step8 触发须先保证，否则此处断言拦截）。
+        keep_indices 开头与原位重合的 sink 段（keep_indices[j]==j）未被搬动 → 其块内容
+        不变、hash 仍有效，保留以继续供他序列前缀复用。
         """
-        # TODO(step7): 注销被 gather 改写的前部块的前缀缓存 hash + 仅压 ref_count==1 的块。
         num_keep = len(keep_indices)
         new_num_blocks = (num_keep + self.block_size - 1) // self.block_size
         assert 0 < new_num_blocks <= len(seq.block_table)
+        # —— D5：注销被 gather 改写的前部块的前缀缓存 hash ——
+        # keep_indices[j]==j 的最长前缀是"原样未搬"的 token（sink 段）；首个 keep_indices[j]!=j
+        # 起，后续 token 都被前移、所在块被改写。num_identity 即未搬前缀长度。
+        # 下标 j(左边):压缩后,这个 KV 排在紧凑布局的第几位
+        # 值 keep_indices[j](右边):压缩前,它原本在 cache 的第几个物理槽
+        num_identity = 0
+        while num_identity < num_keep and keep_indices[num_identity] == num_identity:
+            num_identity += 1
+        # num_identity//block_size 是首个含被改写 token 的块；全 identity 则无改写块。
+        first_rewritten = new_num_blocks if num_identity == num_keep else num_identity // self.block_size
+        rewritten_blocks = [seq.block_table[b] for b in range(first_rewritten, new_num_blocks)]
+        # 先统一断言，避免部分注销后失败留下不一致状态
+        for block_id in rewritten_blocks:
+            ref = self.blocks[block_id].ref_count
+            assert ref == 1, f"被改写块 {block_id} 被共享(ref_count={ref})，该序列不应压缩"
+        for block_id in rewritten_blocks:
+            block = self.blocks[block_id]
+            if block.hash != -1 and self.hash_to_block_id.get(block.hash) == block_id:
+                del self.hash_to_block_id[block.hash]
+            block.hash = -1
+            block.token_ids = []
         # 释放尾部整块（这些块在 gather 后只剩被丢弃的 KV）
         for block_id in seq.block_table[new_num_blocks:]:
             block = self.blocks[block_id]
@@ -133,6 +160,8 @@ class BlockManager:
         del seq.block_table[new_num_blocks:]
         # num_kv 解耦：见上方时序约定的 -1（pending last_token 尚未入 cache）
         seq.num_dropped_kv = seq.num_tokens - num_keep - 1
+        # D5：标记已压缩，后续 hash_blocks 跳过该序列（块内容已非干净前缀）
+        seq.kv_compressed = True
 
     # KV 压缩(v0)：开新块的判断改用 num_kv（紧凑后 cache 占用），而非逻辑 token 数。
     # 新 token 落在紧凑布局的第 num_kv-1 个 slot；num_kv % block_size == 1 即它起一个新块。
@@ -145,6 +174,9 @@ class BlockManager:
             seq.block_table.append(self._allocate_block())
 
     def hash_blocks(self, seq: Sequence):
+        # D5：已压缩序列的块内容已非干净前缀，跳过注册，避免他序列命中读脏数据
+        if seq.kv_compressed:
+            return
         # 整数除法的语义是”向下取整”,end 自然只数已写满的块,半满的尾块对应的余数被舍去,不进入循环范围
         start = seq.num_cached_tokens // self.block_size
         end = (seq.num_cached_tokens + seq.num_scheduled_tokens) // self.block_size

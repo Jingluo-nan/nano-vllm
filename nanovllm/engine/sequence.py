@@ -27,6 +27,9 @@ class Sequence:
         # KV 压缩(v0)：被压缩丢弃的 KV 累计数。num_kv = num_tokens - num_dropped_kv。
         # 压缩关闭时恒为 0 → num_kv 恒等于 num_tokens，零回归。
         self.num_dropped_kv = 0
+        # KV 压缩(v0 / 设计 D5)：是否已被压缩过。一旦压缩，块内容不再是干净前缀，
+        # 跳过后续 hash_blocks 注册（放弃其前缀复用价值）。仅 rank0 调度侧用，不入 __getstate__。
+        self.kv_compressed = False
         self.is_prefill = True
         self.block_table = []
         self.temperature = sampling_params.temperature

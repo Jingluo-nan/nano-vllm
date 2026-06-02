@@ -39,8 +39,8 @@
 
 ## 7. 前缀缓存隔离（设计 D5）
 
-- [ ] 7.1 `evict` 改写块前将其从 `hash_to_block_id` 注销、置 `hash=-1`；断言只压 `ref_count==1` 的块，否则跳过该序列。**验证**：压缩后改写块不在 `hash_to_block_id` 的 value 中。
-- [ ] 7.2 已压缩序列跳过后续 `hash_blocks` 注册（加标志位）。**验证**：压缩序列不再写入 `hash_to_block_id`。
+- [x] 7.1 `evict` 改写块前将其从 `hash_to_block_id` 注销、置 `hash=-1`；断言只压 `ref_count==1` 的块，否则跳过该序列。**验证**：压缩后改写块不在 `hash_to_block_id` 的 value 中。✅ 用 identity 前缀(keep_indices[j]==j)区分未搬的 sink 块与被改写块：只注销+断言被改写块，sink 块 hash 保留。CPU 单测通过（`scratch/test_task7_1_evict_prefix_isolation.py`，4/4：改写块注销+sink保留、共享块断言拦截、全 identity 不误伤、无关 hash 零回归）+ 独立逻辑对拍 4 场景。ref_count 断言为防御性不变量，真正"跳过该序列"的门控在 step8 触发处（须在 compact_kv 之前判，否则数据已改写）。
+- [x] 7.2 已压缩序列跳过后续 `hash_blocks` 注册（加标志位）。**验证**：压缩序列不再写入 `hash_to_block_id`。✅ `Sequence.kv_compressed`（默认 False、仅 rank0 调度侧用、不入 __getstate__），`evict` 末尾置 True，`hash_blocks` 开头 `if seq.kv_compressed: return`。CPU 单测通过（`scratch/test_task7_2_compressed_skip_hash.py`，4/4：默认 False、压缩序列 no-op、未压缩零回归、evict 置位后 hash_blocks 不再写入）。
 
 ## 8. 触发接入 + 端到端
 
