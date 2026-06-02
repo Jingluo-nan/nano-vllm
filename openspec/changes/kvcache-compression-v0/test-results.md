@@ -25,15 +25,45 @@
 | 任务 | 测试文件 | 结果 | 日期 | 环境 |
 |------|----------|------|------|------|
 | 3.3 `__getstate__/__setstate__` round-trip 同步 `num_dropped_kv` | `scratch/test_task3_3_seq_getstate.py` | ✅ 3/3 PASS | 2026-06-01 | CPU，零依赖（无需 pytest/CUDA） |
-| 3.1 `num_kv` 属性 | — | ⏸ 挂起 | — | — |
-| 3.2 `num_kv_blocks`/`last_kv_block_num_tokens` 跨块边界 | — | ⏸ 挂起 | — | — |
+| 3.1 `num_kv` 属性 | `scratch/test_task3_1_num_kv.py` | ✅ 4/4 PASS | 2026-06-02 | CPU，零依赖 |
+| 3.2 `num_kv_blocks`/`last_kv_block_num_tokens` 跨块边界 | `scratch/test_task3_2_num_kv_blocks.py` | ✅ 6/6 PASS | 2026-06-02 | CPU，零依赖 |
 | 4.1 `streaming_keep_indices` 边界 | `scratch/test_task4_1_streaming_keep_indices.py` | ✅ 6/6 PASS | 2026-06-01 | CPU，零依赖 |
 | 4.2 `should_compress` 触发 | `scratch/test_task4_2_should_compress.py` | ✅ 5/5 PASS | 2026-06-01 | CPU，零依赖 |
 | 5.1 `evict` free_block_ids 增量 | `scratch/test_task5_1_block_manager_evict.py` | ✅ 5/5 PASS | 2026-06-01 | CPU，零依赖（纯 Python 记账，无需 CUDA） |
 | 5.2 `compact_kv` 逐位一致 | `scratch/test_task5_2_compact_kv.py` | ✅ 3/3 PASS | 2026-06-01 | CUDA（轻量桩 + 哨兵编码） |
 | 5.3 CPU 参考对拍（两组 keep_indices） | `scratch/test_task5_3_gather_attention.py` | ✅ 2/2 PASS | 2026-06-01 | CUDA + flash-attn |
+| 6.1/6.2/6.3 prepare_decode/may_append 改用 num_kv（索引算术） | `scratch/test_task6_prepare_decode_num_kv.py` | ✅ 6/6 PASS（修正 2 处用例计算错误后） | 2026-06-02 | CPU，零依赖 |
+| 8.1 端到端实跑（开启压缩长生成） | `scratch/test_task8_1_e2e_gpu.py` | ✅ PASS（不崩 + 压缩触发 + used_peak 下降） | 2026-06-02 | CUDA + flash-attn + Qwen3-0.6B 权重 |
+| 9.1 block 确实释放（开/关对照 + 压缩点回升） | `scratch/test_task9_1_block_reclaim.py` | ✅ PASS（used_peak 6→4、free 回升、无泄漏） | 2026-06-02 | CUDA + flash-attn + Qwen3-0.6B 权重 |
+| 9.2 PPL 没崩（teacher forcing 开/关对照） | `scratch/test_task9_2_perplexity.py` | ✅ PASS（全程 +4.65%，未爆炸） | 2026-06-02 | CUDA + flash-attn + Qwen3-0.6B 权重 |
 
 ## 明细
+
+### 3.1 — `num_kv` 属性（2026-06-02）
+
+- 测试文件：`scratch/test_task3_1_num_kv.py`
+- 运行方式：`python scratch/test_task3_1_num_kv.py`
+- 环境：CPU，零依赖
+- 结果：**4/4 PASS**
+  - `test_num_kv_closed_equals_num_tokens` — PASS（num_dropped_kv==0 时 num_kv≡num_tokens，1..49 全覆盖）
+  - `test_num_kv_subtracts_dropped` — PASS（num_kv = num_tokens - num_dropped_kv）
+  - `test_num_kv_auto_increments_on_decode` — PASS（append_token 后 num_kv 自动 +1，num_dropped_kv 不变）
+  - `test_num_kv_closed_auto_increments` — PASS（关闭压缩 decode 后仍恒等 num_tokens）
+- 覆盖约定：num_kv 定义、decode 自增、零回归。
+
+### 3.2 — `num_kv_blocks` / `last_kv_block_num_tokens` 跨块边界（2026-06-02）
+
+- 测试文件：`scratch/test_task3_2_num_kv_blocks.py`
+- 运行方式：`python scratch/test_task3_2_num_kv_blocks.py`
+- 环境：CPU，零依赖（顶部 `Sequence.block_size = BS=4` 对齐类属性以测小块边界）
+- 结果：**6/6 PASS**
+  - `test_exact_block_boundary_last_block_full` — PASS（整除时末块满 == BS）
+  - `test_half_full_last_block` — PASS（非整除，末块余数 = num_kv % BS）
+  - `test_single_block` — PASS
+  - `test_based_on_num_kv_not_num_tokens` — PASS（压缩后基于 num_kv 算块，对照旧 num_blocks 基于 num_tokens）
+  - `test_zero_regression_equals_num_blocks` — PASS（num_dropped_kv==0 时等于 num_blocks/last_block_num_tokens）
+  - `test_last_block_num_tokens_range_invariant` — PASS（不变量 1≤last≤BS）
+- 覆盖约定：ceil 分块、末块 token 数公式、基于 num_kv 而非 num_tokens、零回归、范围不变量。
 
 ### 3.3 — `__getstate__/__setstate__` round-trip（2026-06-01）
 
@@ -110,3 +140,66 @@
 - 容差：rtol=1e-2, atol=2e-2（fp16 flash vs fp32 参考的合理量级）。
 - 覆盖约定：compact_kv gather → 紧凑 block_table + cache_seqlens=len(keep) 走 flash_attn_with_kvcache，结果与「只在 K[keep]/V[keep] 上手算的注意力」逐元素一致；注意力对 key 排列不变，故 gather 顺序不影响。
 - 未覆盖：GQA（num_heads>num_kv_heads，本测试为 MHA）；pending last_token 的拼接（本测试 cache_seqlens=len(keep)，隔离 gather 正确性）。
+
+### 6.1/6.2/6.3 — prepare_decode / may_append 改用 num_kv（2026-06-02 重跑修正）
+
+- 测试文件：`scratch/test_task6_prepare_decode_num_kv.py`
+- 运行方式：`python scratch/test_task6_prepare_decode_num_kv.py`
+- 环境：CPU，零依赖（6.1/6.3 用真 BlockManager+Sequence；6.2 复刻 prepare_decode 逐条公式对拍，因真函数走 .cuda()）
+- 结果：**6/6 PASS**（重跑时发现并修正 2 处用例自身的计算错误，详见下）
+  - `test_6_2_zero_regression_when_no_compression` — PASS（num_dropped_kv==0 时新旧公式逐位一致）
+  - `test_6_2_slot_lands_in_compacted_layout` — PASS（压缩落点）
+  - `test_6_2_just_after_evict_pending_token_starts_new_block` — PASS（evict 后起新块）
+  - `test_6_3_may_append_uses_num_kv` — PASS（开块判据用 num_kv）
+  - `test_6_3_zero_regression_may_append` — PASS（零回归）
+  - `test_6_3_can_append_uses_num_kv` — PASS
+- **本次修正（之前 tasks.md 误标 6/6，实际执行早死在 6.2 未跑到 6.3）**：
+  1. 6.2：`seq.last_kv_block_num_tokens` 用 `Sequence.block_size`(类属性=256)，与 slot 公式传的 BS=4 打架 → 测试模块顶部加 `Sequence.block_size = BS` 对齐。
+  2. 6.3：两个用例误用 `num_kv=9` 当作 `9%4 != 1`（实际 `9%4==1` 会触发开块）→ 改用 `num_kv=10`（`10%4=2`）。
+- 仍挂起：真 `prepare_decode` 走 `.cuda()` 的端到端实跑（需加载完整模型构建 ModelRunner），归入 step 8.1 的 GPU 端到端范畴（见下，已于 2026-06-02 跑通）。
+
+### 8.1 — 端到端实跑（开启 KV 压缩长生成）（2026-06-02）
+
+- 测试文件：`scratch/test_task8_1_e2e_gpu.py`
+- 运行方式：`python scratch/test_task8_1_e2e_gpu.py`
+- 环境：CUDA + flash-attn + Qwen3-0.6B 权重（RTX 4050 Laptop 6.4GB）；enforce_eager=True 隔离 CUDA graph
+- 配置：block_size=256, sink=1, recent=3；单序列 ignore_eos 生成 1400 token（>1024 才跨过触发阈值）
+- 设计：每个配置在**独立子进程**跑（init_process_group 与 KV 显存预算不可在同进程内重建两次）
+- 结果：**PASS**
+  - 关闭压缩（baseline）：1400 token，used_peak=6 块，evict=0
+  - 开启压缩：1400 token，used_peak=**4** 块，evict=**2** 次，free_low 略升
+  - 断言：生成满 max_tokens ✓；evict 触发>0 ✓；used_peak(on)≤used_peak(off)（6→4）✓
+- 意义：① 8.1「不崩/不非法内存」达成；② 同时为 9.1「block 确实释放」提供初步证据（used_peak 6→4，压到 sink1+recent3=4 块）。
+- 未覆盖：多序列并发 + 抢占场景；CUDA graph（enforce_eager=False）路径；PPL 质量（task 9.2）。
+
+### 9.1 — block 确实释放（开/关对照 + 压缩点 free 回升）（2026-06-02）
+
+- 测试文件：`scratch/test_task9_1_block_reclaim.py`
+- 运行方式：`python scratch/test_task9_1_block_reclaim.py`
+- 环境：CUDA + flash-attn + Qwen3-0.6B（RTX 4050）；enforce_eager=True；每配置独立子进程
+- 配置：block_size=256, sink=1, recent=3；单序列 ignore_eos 生成 1400 token
+- 结果：**PASS**
+  | 指标 | 关闭 | 开启 |
+  |------|------|------|
+  | used_block 峰值 | 6 | 4 |
+  | free 起始/结束 | 98/98 | 98/98 |
+  | evict 次数 | 0 | 2 |
+  - 压缩点 free 回升：evict#1 93→94(+1)、evict#2 93→94(+1)
+- 断言：used_peak(on)<used_peak(off)（6→4）✓；每个压缩点 reclaimed>0 ✓；序列结束 free 复原无泄漏（98/98）✓
+- 结论：block 回收实时发生（不是延迟）、峰值被钉在 sink+recent=4 块、生命周期无泄漏。
+- 未覆盖：多序列并发 + 抢占下的回收/回升（v0 单序列已足够证明回收机制；并发留待 9.3 收益对照或后续）。
+
+### 9.2 — PPL 没崩（teacher forcing 开/关对照）（2026-06-02）
+
+- 测试文件：`scratch/test_task9_2_perplexity.py`
+- 运行方式：`python scratch/test_task9_2_perplexity.py`
+- 环境：CUDA + flash-attn + Qwen3-0.6B（RTX 4050）；enforce_eager=True；每配置独立子进程
+- 方法：① 关闭压缩+种子0 生成参考序列 ref（prompt 21 + 续写 1400 = 1421 token）；② 对同一 ref，开/关压缩各重跑，monkeypatch `model_runner.sampler` 强制逐位返回 ref 的 token（teacher forcing，走同一路径），记录 `log_softmax(原始 logits)[token]`；③ PPL=exp(-平均 logprob)。唯一变量=压缩。
+- 结果：**PASS**
+  | | 关闭 | 开启 |
+  |---|---|---|
+  | PPL（全程） | 1.6697 | 1.7473（+4.65%） |
+  | PPL（>1024 压缩生效段） | 1.7177 | 2.0346 |
+- 断言：PPL 有限 ✓；全程相对上升 <50%（实际 +4.65%）✓
+- 解读：退化集中在压缩生效后段（1.72→2.03，仍很低），符合"丢中段 KV 后越靠后越依赖被丢上下文"的直觉；StreamingLLM sink+recent 足以维持流畅度。与肉眼 essay 连贯的定性结论一致。
+- 注意：PPL 用模型真实分布（不做 temperature 缩放）；teacher forcing 使开/关走完全相同 token 序列，差异纯归因于压缩。
