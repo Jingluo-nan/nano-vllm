@@ -16,8 +16,8 @@
 
 ## 3. num_kv 解耦（F2 / 设计 D4，压缩前提）
 
-- [x] 3.1 `sequence.py` 新增 `num_dropped_kv` 字段 + `num_kv` 属性(=num_tokens-num_dropped_kv，decode 自动+1，关闭时恒等 num_tokens)。⏸ 单测挂起。
-- [x] 3.2 `sequence.py` 增加 `num_kv_blocks`/`last_kv_block_num_tokens` 属性(基于 num_kv)。⏸ 跨块边界单测挂起。
+- [x] 3.1 `sequence.py` 新增 `num_dropped_kv` 字段 + `num_kv` 属性(=num_tokens-num_dropped_kv，decode 自动+1，关闭时恒等 num_tokens)。✅ 单测通过（`scratch/test_task3_1_num_kv.py`，4/4 PASS，2026-06-02，CPU 零依赖）。
+- [x] 3.2 `sequence.py` 增加 `num_kv_blocks`/`last_kv_block_num_tokens` 属性(基于 num_kv)。✅ 跨块边界单测通过（`scratch/test_task3_2_num_kv_blocks.py`，6/6 PASS，2026-06-02，CPU 零依赖）。
 - [x] 3.3 `sequence.py` 的 `__getstate__/__setstate__` 同步 `num_dropped_kv`。✅ round-trip 单测通过（`scratch/test_task3_3_seq_getstate.py`，3/3 PASS，2026-06-01，CPU 零依赖）。
 
 ## 4. StreamingLLM 保留集（设计 D7）
