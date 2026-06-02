@@ -33,7 +33,7 @@
 
 ## 6. prepare_decode 改用 num_kv（设计 D4/D6）
 
-- [x] 6.1 `model_runner.py` 的 `prepare_decode`：`context_lens ← seq.num_kv`。**验证**：压缩后 decode 不越界。✅ 索引算术对拍通过（`scratch/test_task6_prepare_decode_num_kv.py`，6/6）。
+- [x] 6.1 `model_runner.py` 的 `prepare_decode`：`context_lens ← seq.num_kv`。**验证**：压缩后 decode 不越界。✅ 索引算术对拍通过（`scratch/test_task6_prepare_decode_num_kv.py`，6/6；2026-06-02 重跑修正 2 处用例计算错误后真过，详见 test-results.md）。
 - [x] 6.2 新 token `slot_mapping ← block_table[-1]*block_size + (num_kv-1)%block_size`（用 `last_kv_block_num_tokens-1` 等价表达，贴合原 `last_block_num_tokens-1` 风格）；`positions` 保持 `len(seq)-1`。**验证**：新 token KV 写入紧凑布局的正确 slot。✅ 复刻公式对拍：零回归(num_dropped_kv==0 与旧公式逐位一致) + 压缩落点 + evict 后起新块均通过。真 `prepare_decode` 走 `.cuda()`，端到端实跑挂起 GPU 环境。
 - [x] 6.3 `block_manager.py` 的 `may_append`/`can_append` 判断改用 `num_kv % block_size`。**验证**：压缩后继续 decode 能正确按需开新块。✅ 真 BlockManager+Sequence 实测（开块触发用 num_kv、零回归、can_append）通过。
 

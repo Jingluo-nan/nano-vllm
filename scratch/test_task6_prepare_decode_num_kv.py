@@ -17,6 +17,10 @@ from nanovllm.engine.sequence import Sequence
 from nanovllm.sampling_params import SamplingParams
 
 BS = 4  # 测试用小 block_size
+# Sequence.block_size 是类属性(默认 256)，num_kv_blocks/last_kv_block_num_tokens 用它。
+# 测试用小块时必须同步对齐，否则 seq.last_kv_block_num_tokens 仍按 256 算，与 BS=4 的
+# slot 公式打架（曾导致 slot 偏差）。
+Sequence.block_size = BS
 
 
 def _make_seq(num_tokens: int, num_dropped_kv: int = 0) -> Sequence:
@@ -81,7 +85,7 @@ def test_6_2_just_after_evict_pending_token_starts_new_block():
 def test_6_3_may_append_uses_num_kv():
     # num_tokens 较大但 num_kv 刚好 %BS==1 → 应开新块
     mgr = BlockManager(num_blocks=16, block_size=BS)
-    seq = _make_seq(20, num_dropped_kv=20 - 9)  # num_kv = 9, 9%4 != 1 → 不开
+    seq = _make_seq(20, num_dropped_kv=20 - 10)  # num_kv = 10, 10%4 != 1 → 不开
     seq.block_table = [0, 1, 2]
     for b in seq.block_table:
         mgr.free_block_ids.remove(b); mgr.used_block_ids.add(b); mgr.blocks[b].ref_count = 1
@@ -124,7 +128,7 @@ def test_6_3_can_append_uses_num_kv():
 
     seq_need = _make_seq(20, num_dropped_kv=20 - 13)  # num_kv=13, %4==1 需新块
     assert mgr.can_append(seq_need) is False
-    seq_ok = _make_seq(20, num_dropped_kv=20 - 9)     # num_kv=9, %4!=1 不需新块
+    seq_ok = _make_seq(20, num_dropped_kv=20 - 10)     # num_kv=10, %4!=1 不需新块
     assert mgr.can_append(seq_ok) is True
 
 
