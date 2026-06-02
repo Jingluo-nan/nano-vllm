@@ -65,6 +65,7 @@ class Sequence:
 
     # —— KV 压缩(v0)：以下三个基于 num_kv（cache 内实际保留的 KV 数）——
     # 压缩关闭时 num_dropped_kv==0，三者分别等于 num_tokens / num_blocks / last_block_num_tokens。
+    # cache 物理上真正存着多少(= 保留的 + 那个待写的新 token)
     @property
     def num_kv(self):
         return self.num_tokens - self.num_dropped_kv

@@ -217,9 +217,11 @@ class ModelRunner:
         context_lens = []
         for seq in seqs:
             input_ids.append(seq.last_token)
-            positions.append(len(seq) - 1)
-            context_lens.append(len(seq)) # decode 路径下,每条 seq 当前 KV 已累积的 token 数
-            slot_mapping.append(seq.block_table[-1] * self.block_size + seq.last_block_num_tokens  - 1) # last_block_num_tokens 是序列在最后一个块中的token数
+            positions.append(len(seq) - 1) # 逻辑位置不变（RoPE 用原始位置），压缩只动物理布局
+            # KV 压缩(v0)：回看长度与新 token 落点都改用 num_kv（cache 内紧凑后的实际 KV 数）。
+            # 压缩关闭时 num_kv==len(seq)、last_kv_block_num_tokens==last_block_num_tokens，零回归。
+            context_lens.append(seq.num_kv) # decode 路径下,每条 seq 当前 cache 内实际保留的 KV 数
+            slot_mapping.append(seq.block_table[-1] * self.block_size + seq.last_kv_block_num_tokens - 1) # 新 token 写到紧凑布局尾块的下一个 slot
         input_ids = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         positions = torch.tensor(positions, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         slot_mapping = torch.tensor(slot_mapping, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)

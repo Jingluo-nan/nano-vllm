@@ -45,6 +45,17 @@ def _build(num_kv, block_table):
     pos = torch.arange(num_kv, device="cuda")
     phys = bt[pos // BS]          # 逻辑块 → 物理块
     off = pos % BS # 在块中的偏移量
+    # 等价于
+    # for i in range(600):
+    # kv_cache[0, 0, phys[i], off[i]] = K[i]
+    '''
+    K[0]   → kv_cache[0,0, 4, 0]     第0个token  → 物理块4 槽0
+    K[1]   → kv_cache[0,0, 4, 1]
+    K[255] → kv_cache[0,0, 4, 255]   块4写满
+    K[256] → kv_cache[0,0, 1, 0]     跳到物理块1 槽0
+    K[512] → kv_cache[0,0, 3, 0]     跳到物理块3 槽0
+    K[599] → kv_cache[0,0, 3, 87]    最后一个token
+    '''
     kv_cache[0, 0, phys, off] = K
     kv_cache[1, 0, phys, off] = V
     return q, K, V, kv_cache
@@ -53,6 +64,8 @@ def _build(num_kv, block_table):
 def _reference(q, K, V, keep_indices):
     """只在保留 KV 上手算注意力（fp32）。返回 [NUM_HEADS, HEAD_DIM]。"""
     idx = torch.tensor(keep_indices, device="cuda")
+    # K 完整的 key,形状 (num_kv, heads, dim) = (600, 4, 128)
+    # 沿第 0 维(token 维) 按 idx 挑行
     kk = K.index_select(0, idx).float()    # [n, heads, d]
     vv = V.index_select(0, idx).float()
     qf = q.float()                         # [heads, d]
@@ -62,7 +75,11 @@ def _reference(q, K, V, keep_indices):
     out = torch.einsum("hn,nhd->hd", attn, vv)  # [heads, d]
     return out
 
-
+'''
+_tested 是被测路径:它走真实引擎的物理 gather + flash-attn,算出 decode 注意力输出,
+拿去和 _reference(高精度手算)对拍。和参考实现「在逻辑层挑保留 token」不同,
+这里是「在物理 cache 里真把幸存 KV 搬紧凑,再让 flash-attn 读」。
+'''
 def _tested(q, kv_cache, block_table, keep_indices):
     """compact_kv gather → flash_attn_with_kvcache。返回 [NUM_HEADS, HEAD_DIM]。"""
     d = _Dummy()
@@ -79,6 +96,7 @@ def _tested(q, kv_cache, block_table, keep_indices):
     v_cache = kv_cache[1, 0]
     q_in = q.unsqueeze(0).unsqueeze(0)   # [batch=1, seqlen=1, heads, d]
     bt = torch.tensor([compacted_bt], dtype=torch.int32, device="cuda")
+    # flash-attn「这条序列要回看多少个 KV」。它是压缩在被测路径里真正"生效"的开关
     cache_seqlens = torch.tensor([num_keep], dtype=torch.int32, device="cuda")
     o = flash_attn_with_kvcache(q_in, k_cache, v_cache,
                                 cache_seqlens=cache_seqlens, block_table=bt,

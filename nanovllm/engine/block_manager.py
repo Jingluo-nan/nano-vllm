@@ -134,11 +134,14 @@ class BlockManager:
         # num_kv 解耦：见上方时序约定的 -1（pending last_token 尚未入 cache）
         seq.num_dropped_kv = seq.num_tokens - num_keep - 1
 
+    # KV 压缩(v0)：开新块的判断改用 num_kv（紧凑后 cache 占用），而非逻辑 token 数。
+    # 新 token 落在紧凑布局的第 num_kv-1 个 slot；num_kv % block_size == 1 即它起一个新块。
+    # 压缩关闭时 num_kv==len(seq)，与原行为完全一致。
     def can_append(self, seq: Sequence) -> bool:
-        return len(self.free_block_ids) >= (len(seq) % self.block_size == 1)
+        return len(self.free_block_ids) >= (seq.num_kv % self.block_size == 1)
 
     def may_append(self, seq: Sequence):
-        if len(seq) % self.block_size == 1:
+        if seq.num_kv % self.block_size == 1:
             seq.block_table.append(self._allocate_block())
 
     def hash_blocks(self, seq: Sequence):
