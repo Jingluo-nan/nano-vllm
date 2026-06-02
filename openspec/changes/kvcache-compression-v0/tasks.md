@@ -44,7 +44,7 @@
 
 ## 8. 触发接入 + 端到端
 
-- [ ] 8.1 在 decode 循环接入：开关开启时，对触发条件成立的序列算 `streaming_keep_indices` → `evict` → gather。接口固定 `evict(seq, keep_indices)`（v1 仅换 keep_indices 来源）。**验证**：开启压缩端到端跑通长生成不报错、不崩、不非法内存。
+- [x] 8.1 在 decode 循环接入：开关开启时，对触发条件成立的序列算 `streaming_keep_indices` → `evict` → gather。接口固定 `evict(seq, keep_indices)`（v1 仅换 keep_indices 来源）。**验证**：开启压缩端到端跑通长生成不报错、不崩、不非法内存。✅ 代码接入：`LLMEngine.step` 在 decode + 开关开启时调 `maybe_compress_kv(seqs)`；管线 = `should_compress`(physical_kv=num_kv-1) → `streaming_keep_indices` → `block_manager.can_evict`(gather 前 ref==1 门控) → `model_runner.call("compact_kv", block_table, keep_indices)`(所有 rank 各搬分片) → `block_manager.evict`。新增 `BlockManager.can_evict`/`_rewritten_block_ids`。CPU 单测通过（`scratch/test_task8_1_compress_pipeline.py`，6/6：can_evict 门控、触发决策真子集、evict 块账、短序列不触发）+ 独立逻辑对拍。⏸ **端到端实跑（开启压缩长生成不崩/不非法内存）挂起 GPU + flash-attn 环境**。
 
 ## 9. v0 验收（全过才进 v1）
 

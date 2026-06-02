@@ -104,6 +104,31 @@ class BlockManager:
         seq.num_cached_tokens = 0
         seq.block_table.clear()
 
+    def _rewritten_block_ids(self, seq: Sequence, keep_indices: list[int]) -> list[int]:
+        """gather 会改写内容的前部块（物理块号列表）。
+
+        keep_indices[j]==j 的最长前缀是"原样未搬"的 token（sink 段）；首个 keep_indices[j]!=j
+        起，后续 token 都被前移、所在块被改写。下标 j=压缩后紧凑布局的新位，
+        keep_indices[j]=压缩前原物理槽。num_identity//block_size 即首个含被改写 token 的块；
+        全 identity（无 token 前移）则无改写块。
+        """
+        num_keep = len(keep_indices)
+        new_num_blocks = (num_keep + self.block_size - 1) // self.block_size
+        num_identity = 0
+        while num_identity < num_keep and keep_indices[num_identity] == num_identity:
+            num_identity += 1
+        first_rewritten = new_num_blocks if num_identity == num_keep else num_identity // self.block_size
+        return [seq.block_table[b] for b in range(first_rewritten, new_num_blocks)]
+
+    def can_evict(self, seq: Sequence, keep_indices: list[int]) -> bool:
+        """gather **之前**的门控（设计 D5）：被改写块须 ref_count==1（独占）才可压缩。
+
+        必须在 `ModelRunner.compact_kv` 之前调用——一旦 gather 改了数据就无法回滚，
+        evict 里的同名断言只是事后兜底。共享块（典型是被前缀复用的 sink）不在改写集内，
+        不影响判定。
+        """
+        return all(self.blocks[bid].ref_count == 1 for bid in self._rewritten_block_ids(seq, keep_indices))
+
     def evict(self, seq: Sequence, keep_indices: list[int]):
         """回收序列尾部不再需要的整块（v0 压缩的块账部分，token 级通用、含零散）。
 
@@ -131,16 +156,7 @@ class BlockManager:
         new_num_blocks = (num_keep + self.block_size - 1) // self.block_size
         assert 0 < new_num_blocks <= len(seq.block_table)
         # —— D5：注销被 gather 改写的前部块的前缀缓存 hash ——
-        # keep_indices[j]==j 的最长前缀是"原样未搬"的 token（sink 段）；首个 keep_indices[j]!=j
-        # 起，后续 token 都被前移、所在块被改写。num_identity 即未搬前缀长度。
-        # 下标 j(左边):压缩后,这个 KV 排在紧凑布局的第几位
-        # 值 keep_indices[j](右边):压缩前,它原本在 cache 的第几个物理槽
-        num_identity = 0
-        while num_identity < num_keep and keep_indices[num_identity] == num_identity:
-            num_identity += 1
-        # num_identity//block_size 是首个含被改写 token 的块；全 identity 则无改写块。
-        first_rewritten = new_num_blocks if num_identity == num_keep else num_identity // self.block_size
-        rewritten_blocks = [seq.block_table[b] for b in range(first_rewritten, new_num_blocks)]
+        rewritten_blocks = self._rewritten_block_ids(seq, keep_indices)
         # 先统一断言，避免部分注销后失败留下不一致状态
         for block_id in rewritten_blocks:
             ref = self.blocks[block_id].ref_count

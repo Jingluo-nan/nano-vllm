@@ -10,6 +10,7 @@ from nanovllm.sampling_params import SamplingParams
 from nanovllm.engine.sequence import Sequence
 from nanovllm.engine.scheduler import Scheduler
 from nanovllm.engine.model_runner import ModelRunner
+from nanovllm.engine.kv_compression import streaming_keep_indices, should_compress
 
 
 class LLMEngine:
@@ -18,6 +19,7 @@ class LLMEngine:
         config_fields = {field.name for field in fields(Config)}
         config_kwargs = {k: v for k, v in kwargs.items() if k in config_fields}
         config = Config(model, **config_kwargs)
+        self.config = config
         Sequence.block_size = config.kvcache_block_size
         self.ps = []
         self.events = []
@@ -51,8 +53,43 @@ class LLMEngine:
         num_tokens = sum(seq.num_scheduled_tokens for seq in seqs) if is_prefill else -len(seqs)
         token_ids = self.model_runner.call("run", seqs, is_prefill)
         self.scheduler.postprocess(seqs, token_ids, is_prefill)
+        # KV 压缩(v0)：仅 decode 阶段、postprocess 之后触发（此时 last_token 已 append、
+        # 其 KV 尚未写入 cache，符合 evict 的"物理 KV 数 = num_kv-1"时序约定）。
+        if not is_prefill and self.config.enable_kv_compression:
+            self.maybe_compress_kv(seqs)
         outputs = [(seq.seq_id, seq.completion_token_ids) for seq in seqs if seq.is_finished]
         return outputs, num_tokens
+
+    def maybe_compress_kv(self, seqs: list[Sequence]):
+        """对触发条件成立的 decode 序列做 StreamingLLM 压缩：keep-set → 门控 → gather → 回收。
+
+        管线（设计 D1/D5）：streaming_keep_indices 算确定性保留集 → can_evict 在 gather 前
+        判被改写块独占（否则跳过该序列，避免改坏共享块）→ compact_kv 物理搬迁（所有 rank
+        各搬自己的 kv_cache 分片）→ evict 回收尾块 + 注销 hash + 置 num_dropped_kv。
+        接口固定 evict(seq, keep_indices)，v1 仅替换 keep_indices 来源。
+        """
+        config = self.config
+        bs = config.kvcache_block_size
+        block_manager = self.scheduler.block_manager
+        for seq in seqs:
+            if seq.is_finished:
+                continue
+            # 物理 cache 内 KV 数 = num_kv - 1（pending last_token 的 KV 尚未写入）
+            physical_kv = seq.num_kv - 1
+            if physical_kv <= 0:
+                continue
+            num_kv_blocks = (physical_kv + bs - 1) // bs
+            if not should_compress(num_kv_blocks, config.kv_sink_blocks, config.kv_recent_blocks):
+                continue
+            keep_indices = streaming_keep_indices(physical_kv, config.kv_sink_blocks, config.kv_recent_blocks, bs)
+            if len(keep_indices) >= physical_kv:
+                continue  # 无可丢（理论上 should_compress 已挡住，防御性）
+            # gather 前门控：被改写块须独占，否则跳过该序列（数据一旦搬迁无法回滚）
+            if not block_manager.can_evict(seq, keep_indices):
+                continue
+            # 物理 gather 须在 evict 截断 block_table 之前（compact_kv 读旧 block_table）
+            self.model_runner.call("compact_kv", seq.block_table, keep_indices)
+            block_manager.evict(seq, keep_indices)
 
     def is_finished(self):
         return self.scheduler.is_finished()
