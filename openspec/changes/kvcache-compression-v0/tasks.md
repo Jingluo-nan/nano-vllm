@@ -50,5 +50,5 @@
 
 - [x] 9.1 **block 确实释放**：开/关压缩对比，开启时 `free_block_ids` 在压缩点回升、峰值 `used_block_ids` 更低。**验证**：计数证明回收。✅ `scratch/test_task9_1_block_reclaim.py`（2026-06-02，Qwen3-0.6B）：used_peak 6→4、2 个压缩点 free 各 +1 块回升、结束无泄漏（98/98）。
 - [x] 9.2 **PPL 没崩**：相同种子开/关压缩算 perplexity，仅小幅上升不爆炸。**验证**：PPL 报告在阈值内。✅ `scratch/test_task9_2_perplexity.py`（2026-06-02，Qwen3-0.6B，teacher forcing 控制变量同一 1421-token ref）：全程 PPL 1.670→1.747（+4.65%）、压缩生效后段 1.718→2.035，未爆炸。
-- [ ] 9.3 **收益对照**（依赖第 1 步度量）：preemption↓、平均 decode batch↑。**验证**：与 baseline 可对照的数字。
+- [x] 9.3 **收益对照**（依赖第 1 步度量）：preemption↓、平均 decode batch↑。**验证**：与 baseline 可对照的数字。✅ `scratch/test_task9_3_benefit.py`（2026-06-02，Qwen3-0.6B，16 序列并发×2000 token 制造 KV 紧张）：preemptions 4→0、avg_decode_batch 12.93→16.00、decode_tok_s（decode 吞吐,token/秒） 407→474(+16.5%)、used_peak 98→64。
 - [ ] 9.4 `openspec validate kvcache-compression-v0` 通过，归档前任务全勾选。**验证**：validate 通过。

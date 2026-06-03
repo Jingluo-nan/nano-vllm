@@ -36,6 +36,7 @@
 | 8.1 端到端实跑（开启压缩长生成） | `scratch/test_task8_1_e2e_gpu.py` | ✅ PASS（不崩 + 压缩触发 + used_peak 下降） | 2026-06-02 | CUDA + flash-attn + Qwen3-0.6B 权重 |
 | 9.1 block 确实释放（开/关对照 + 压缩点回升） | `scratch/test_task9_1_block_reclaim.py` | ✅ PASS（used_peak 6→4、free 回升、无泄漏） | 2026-06-02 | CUDA + flash-attn + Qwen3-0.6B 权重 |
 | 9.2 PPL 没崩（teacher forcing 开/关对照） | `scratch/test_task9_2_perplexity.py` | ✅ PASS（全程 +4.65%，未爆炸） | 2026-06-02 | CUDA + flash-attn + Qwen3-0.6B 权重 |
+| 9.3 收益对照（preemption↓ / decode batch↑） | `scratch/test_task9_3_benefit.py` | ✅ PASS（preempt 4→0、batch 12.93→16） | 2026-06-02 | CUDA + flash-attn + Qwen3-0.6B 权重 |
 
 ## 明细
 
@@ -203,3 +204,20 @@
 - 断言：PPL 有限 ✓；全程相对上升 <50%（实际 +4.65%）✓
 - 解读：退化集中在压缩生效后段（1.72→2.03，仍很低），符合"丢中段 KV 后越靠后越依赖被丢上下文"的直觉；StreamingLLM sink+recent 足以维持流畅度。与肉眼 essay 连贯的定性结论一致。
 - 注意：PPL 用模型真实分布（不做 temperature 缩放）；teacher forcing 使开/关走完全相同 token 序列，差异纯归因于压缩。
+
+### 9.3 — 收益对照（preemption↓ / avg decode batch↑）（2026-06-02）
+
+- 测试文件：`scratch/test_task9_3_benefit.py`
+- 运行方式：`python scratch/test_task9_3_benefit.py`
+- 环境：CUDA + flash-attn + Qwen3-0.6B（RTX 4050）；enforce_eager=True；每配置独立子进程
+- 工作负载：16 序列并发 × 2000 token，gpu_util=0.9（KV cache 98 块）。长生成让"压缩稳态"主导：关闭压缩 16×⌈2000/256⌉=128≫98 全程抢占；开启压缩钉在 sink1+recent3=4 块 →16×4=64<98 爬坡后稳住。
+- 结果：**PASS**
+  | 指标 | 关闭 | 开启 |
+  |------|------|------|
+  | preemptions | 4 | **0** |
+  | avg_decode_batch | 12.93 | **16.00** |
+  | decode_tok_s | 407.3 | 474.5（+16.5%） |
+  | used_block 峰值 | 98/98（打满） | 64/98 |
+- 断言：preemptions(on)≤off（4→0）✓；avg_decode_batch(on)≥off（12.93→16）✓
+- 调参记录：先用 20/22 序列×1200 token，preemption 持平（3→3）——因抢占集中在压缩阈值前的"爬坡期"（前 1024 token 开/关相同）。改长生成（2000 token）使压缩稳态主导后，preemption 才显著下降（4→0）。
+- 指标来源：`LLMEngine.metrics`（task 1 基线度量：preemptions / avg_decode_batch / decode_tok_s）。
