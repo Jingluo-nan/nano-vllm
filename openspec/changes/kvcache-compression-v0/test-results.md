@@ -24,6 +24,7 @@
 
 | 任务 | 测试文件 | 结果 | 日期 | 环境 |
 |------|----------|------|------|------|
+| 1.4 默认配置 baseline 三项度量 | `scratch/test_task1_4_baseline.py` | ✅ 记录（preempt=0/batch=8/tok_s≈260） | 2026-06-02 | CUDA + flash-attn + Qwen3-0.6B 权重 |
 | 3.3 `__getstate__/__setstate__` round-trip 同步 `num_dropped_kv` | `scratch/test_task3_3_seq_getstate.py` | ✅ 3/3 PASS | 2026-06-01 | CPU，零依赖（无需 pytest/CUDA） |
 | 3.1 `num_kv` 属性 | `scratch/test_task3_1_num_kv.py` | ✅ 4/4 PASS | 2026-06-02 | CPU，零依赖 |
 | 3.2 `num_kv_blocks`/`last_kv_block_num_tokens` 跨块边界 | `scratch/test_task3_2_num_kv_blocks.py` | ✅ 6/6 PASS | 2026-06-02 | CPU，零依赖 |
@@ -37,8 +38,21 @@
 | 9.1 block 确实释放（开/关对照 + 压缩点回升） | `scratch/test_task9_1_block_reclaim.py` | ✅ PASS（used_peak 6→4、free 回升、无泄漏） | 2026-06-02 | CUDA + flash-attn + Qwen3-0.6B 权重 |
 | 9.2 PPL 没崩（teacher forcing 开/关对照） | `scratch/test_task9_2_perplexity.py` | ✅ PASS（全程 +4.65%，未爆炸） | 2026-06-02 | CUDA + flash-attn + Qwen3-0.6B 权重 |
 | 9.3 收益对照（preemption↓ / decode batch↑） | `scratch/test_task9_3_benefit.py` | ✅ PASS（preempt 4→0、batch 12.93→16） | 2026-06-02 | CUDA + flash-attn + Qwen3-0.6B 权重 |
+| 9.4 openspec validate --strict | （CLI）`@fission-ai/openspec` | ✅ "Change is valid"（exit=0） | 2026-06-03 | npx @fission-ai/openspec@latest |
 
 ## 明细
+
+### 1.4 — 默认配置 baseline 三项度量（2026-06-02）
+
+- 测试文件：`scratch/test_task1_4_baseline.py`
+- 运行方式：`python scratch/test_task1_4_baseline.py`
+- 环境：CUDA + flash-attn + Qwen3-0.6B（RTX 4050）；enforce_eager=True；默认配置（压缩关闭）
+- 工作负载：8 序列 × 512 token，gpu_util=0.9，seed=0（常规运行，不刻意制造 KV 压力）
+- 结果（`LLMEngine.metrics`）：
+  - preemptions = 0
+  - avg_decode_batch = 8.00
+  - decode_tok_s ≈ 260（多次 258~263，计时波动）
+- 说明：preemptions / avg_decode_batch 确定可复现；decode_tok_s 受计时影响有小波动。此为 task 9.3 收益对照的参照基线（9.3 用更高并发+长生成单独制造压力场景，数值不直接可比）。
 
 ### 3.1 — `num_kv` 属性（2026-06-02）
 
@@ -221,3 +235,11 @@
 - 断言：preemptions(on)≤off（4→0）✓；avg_decode_batch(on)≥off（12.93→16）✓
 - 调参记录：先用 20/22 序列×1200 token，preemption 持平（3→3）——因抢占集中在压缩阈值前的"爬坡期"（前 1024 token 开/关相同）。改长生成（2000 token）使压缩稳态主导后，preemption 才显著下降（4→0）。
 - 指标来源：`LLMEngine.metrics`（task 1 基线度量：preemptions / avg_decode_batch / decode_tok_s）。
+
+### 9.4 — openspec validate（2026-06-03）
+
+- 命令：`npx --yes @fission-ai/openspec@latest validate kvcache-compression-v0 --strict`
+- CLI：`@fission-ai/openspec` v1.4.1（npm 上 `openspec` 是 0.0.0 空壳包，真正的工具在 `@fission-ai/openspec`；bin 名为 `openspec`）
+- 结果：**`Change 'kvcache-compression-v0' is valid`，exit=0**（node 18 引擎警告不影响校验）
+- 前置：tasks.md 全部任务已勾选（22→23，9.4 自身随此条勾上）。
+- 备注：需联网（npx 下载包）；本机权限规则见 `.claude/settings.local.json`。

@@ -8,7 +8,7 @@
 - [x] 1.1 `scheduler.py` 的 `preempt` 累加 `num_preemptions`（`__init__` 初始化、`generate` 起始清零）。
 - [x] 1.2 `generate` 累计每 decode step 的 batch（`-num_tokens`）求平均 decode batch。
 - [x] 1.3 `generate` 累计 decode token 数与耗时算吞吐；存 `self.metrics` 并在 verbose 时打印 `{preemptions, avg_decode_batch, decode_tok_s}`。
-- [ ] 1.4 跑默认配置拿 baseline 三项数字并记录（需 CUDA 机器；本地 Mac 无法实跑）。**验证**：可复现的 baseline。
+- [x] 1.4 跑默认配置拿 baseline 三项数字并记录（需 CUDA 机器；本地 Mac 无法实跑）。**验证**：可复现的 baseline。✅ `scratch/test_task1_4_baseline.py`（2026-06-02，Qwen3-0.6B + RTX 4050，8 序列×512 token，seed=0）：preemptions=0、avg_decode_batch=8.00、decode_tok_s≈260（计时波动 258~263）。
 
 ## 2. 配置开关（默认关闭）
 
@@ -51,4 +51,4 @@
 - [x] 9.1 **block 确实释放**：开/关压缩对比，开启时 `free_block_ids` 在压缩点回升、峰值 `used_block_ids` 更低。**验证**：计数证明回收。✅ `scratch/test_task9_1_block_reclaim.py`（2026-06-02，Qwen3-0.6B）：used_peak 6→4、2 个压缩点 free 各 +1 块回升、结束无泄漏（98/98）。
 - [x] 9.2 **PPL 没崩**：相同种子开/关压缩算 perplexity，仅小幅上升不爆炸。**验证**：PPL 报告在阈值内。✅ `scratch/test_task9_2_perplexity.py`（2026-06-02，Qwen3-0.6B，teacher forcing 控制变量同一 1421-token ref）：全程 PPL 1.670→1.747（+4.65%）、压缩生效后段 1.718→2.035，未爆炸。
 - [x] 9.3 **收益对照**（依赖第 1 步度量）：preemption↓、平均 decode batch↑。**验证**：与 baseline 可对照的数字。✅ `scratch/test_task9_3_benefit.py`（2026-06-02，Qwen3-0.6B，16 序列并发×2000 token 制造 KV 紧张）：preemptions 4→0、avg_decode_batch 12.93→16.00、decode_tok_s（decode 吞吐,token/秒） 407→474(+16.5%)、used_peak 98→64。
-- [ ] 9.4 `openspec validate kvcache-compression-v0` 通过，归档前任务全勾选。**验证**：validate 通过。
+- [x] 9.4 `openspec validate kvcache-compression-v0` 通过，归档前任务全勾选。**验证**：validate 通过。✅ `npx @fission-ai/openspec@latest validate kvcache-compression-v0 --strict` → "Change 'kvcache-compression-v0' is valid"（exit=0，2026-06-03）；本文件全部任务已勾选。
